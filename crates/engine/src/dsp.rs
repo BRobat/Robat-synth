@@ -91,12 +91,7 @@ fn coef(secs: f32, sr: f32) -> f32 {
 
 impl AdsrRates {
     pub fn new(attack: f32, decay: f32, sustain: f32, release: f32, sr: f32) -> Self {
-        AdsrRates {
-            attack_inc: 1.0 / (attack.max(1e-4) * sr),
-            decay_coef: coef(decay, sr),
-            sustain,
-            release_coef: coef(release, sr),
-        }
+        AdsrRates { attack_inc: 1.0 / (attack.max(1e-4) * sr), decay_coef: coef(decay, sr), sustain, release_coef: coef(release, sr) }
     }
 }
 

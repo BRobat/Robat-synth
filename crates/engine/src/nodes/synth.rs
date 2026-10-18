@@ -38,16 +38,7 @@ pub struct Synth {
 
 impl Synth {
     pub fn new(sr: f32) -> Self {
-        let voice = Voice {
-            note: 0,
-            vel: 0.0,
-            phase1: 0.0,
-            phase2: 0.0,
-            env: Adsr::default(),
-            filter: Svf::default(),
-            noise: 1,
-            age: 0,
-        };
+        let voice = Voice { note: 0, vel: 0.0, phase1: 0.0, phase2: 0.0, env: Adsr::default(), filter: Svf::default(), noise: 1, age: 0 };
         let mut voices = [voice; VOICES];
         for (i, v) in voices.iter_mut().enumerate() {
             v.noise = 0x9E37_79B9 ^ (i as u32 + 1).wrapping_mul(0x85EB_CA6B);

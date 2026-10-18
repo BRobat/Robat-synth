@@ -231,9 +231,7 @@ impl Parser {
         if self.peek().is_some_and(|c| c.is_ascii_alphanumeric()) {
             return Err(self.err("malformed note"));
         }
-        note_to_midi(pc, octave)
-            .map(Ast::Note)
-            .ok_or(ParseError { pos: start, msg: "note out of midi range".into() })
+        note_to_midi(pc, octave).map(Ast::Note).ok_or(ParseError { pos: start, msg: "note out of midi range".into() })
     }
 
     fn integer(&mut self) -> Result<i64, ParseError> {

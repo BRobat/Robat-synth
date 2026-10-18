@@ -110,11 +110,7 @@ fn query(ast: &Ast, b: Rational, e: Rational, out: &mut Vec<Hap>) {
                     let scale = *w / total;
                     let mut sub = Vec::new();
                     query(item, c0 + (lo - slot_lo) / scale, c0 + (hi - slot_lo) / scale, &mut sub);
-                    out.extend(sub.into_iter().map(|h| Hap {
-                        start: slot_lo + (h.start - c0) * scale,
-                        dur: h.dur * scale,
-                        note: h.note,
-                    }));
+                    out.extend(sub.into_iter().map(|h| Hap { start: slot_lo + (h.start - c0) * scale, dur: h.dur * scale, note: h.note }));
                 }
             }
         }

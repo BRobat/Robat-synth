@@ -214,11 +214,16 @@ impl Session {
         self.send(Command::Play(on));
     }
 
-    /// Replaces the whole project (e.g. on load).
+    /// Replaces the whole project (e.g. on load) and stops the transport.
     pub fn load(&mut self, project: Project) {
+        self.send(Command::Play(false));
+        self.restore(project);
+    }
+
+    /// Replaces the whole project without touching the transport (undo).
+    pub fn restore(&mut self, project: Project) {
         let old: Vec<u32> = self.project.nodes.iter().map(|n| n.id).collect();
         self.project = project;
-        self.send(Command::Play(false));
         for id in old {
             self.send(Command::RemoveProc(id));
         }

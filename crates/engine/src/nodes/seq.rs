@@ -266,12 +266,7 @@ mod tests {
             events.clear();
             seq.process(
                 &ctx_from(t, 64),
-                Io {
-                    audio_in: [&silence, &silence],
-                    events_in: &[],
-                    audio_out: [&mut l, &mut r],
-                    events_out: &mut events,
-                },
+                Io { audio_in: [&silence, &silence], events_in: &[], audio_out: [&mut l, &mut r], events_out: &mut events },
             );
             evs.extend(events.iter().map(|e| (t + e.frame as usize, e.kind, e.note)));
             t += 64;

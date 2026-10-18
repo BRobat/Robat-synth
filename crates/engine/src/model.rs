@@ -116,11 +116,8 @@ static SYNTH_PARAMS: [ParamSpec; 12] = [
 
 static AMP_PARAMS: [ParamSpec; 2] = [p("gain", 0.0, 2.0, 1.0, Curve::Lin, ""), p("pan", -1.0, 1.0, 0.0, Curve::Lin, "")];
 
-static DELAY_PARAMS: [ParamSpec; 3] = [
-    p("time", 1.0, 16.0, 3.0, Curve::Int, "/16"),
-    p("feedback", 0.0, 0.95, 0.4, Curve::Lin, ""),
-    p("mix", 0.0, 1.0, 0.35, Curve::Lin, ""),
-];
+static DELAY_PARAMS: [ParamSpec; 3] =
+    [p("time", 1.0, 16.0, 3.0, Curve::Int, "/16"), p("feedback", 0.0, 0.95, 0.4, Curve::Lin, ""), p("mix", 0.0, 1.0, 0.35, Curve::Lin, "")];
 
 static OUT_PARAMS: [ParamSpec; 2] = [labeled("channels", 0.0, PAIRS), p("level", 0.0, 1.0, 0.8, Curve::Lin, "")];
 

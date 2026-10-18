@@ -240,11 +240,7 @@ impl EngineCore {
 
     fn process_block(&mut self, n: usize) {
         let cps = self.bpm / 60.0 / 4.0 / self.sr as f64;
-        let ctx = Ctx {
-            sr: self.sr,
-            frames: n,
-            transport: Transport { playing: self.playing, bpm: self.bpm, pos: self.pos, cps },
-        };
+        let ctx = Ctx { sr: self.sr, frames: n, transport: Transport { playing: self.playing, bpm: self.bpm, pos: self.pos, cps } };
         let slots = &mut self.structure.slots;
         for i in 0..slots.len() {
             let (before, rest) = slots.split_at_mut(i);
