@@ -19,6 +19,10 @@ pub fn kind_color(kind: NodeKind) -> Color32 {
         NodeKind::Amp => Color32::from_rgb(170, 170, 180),
         NodeKind::Delay => Color32::from_rgb(150, 110, 255),
         NodeKind::Out => Color32::from_rgb(90, 255, 140),
+        NodeKind::Filter => Color32::from_rgb(255, 170, 60),
+        NodeKind::Drive => Color32::from_rgb(255, 90, 70),
+        NodeKind::Reverb => Color32::from_rgb(90, 150, 255),
+        NodeKind::Chorus => Color32::from_rgb(200, 120, 255),
     }
 }
 

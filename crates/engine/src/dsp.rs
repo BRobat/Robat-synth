@@ -144,7 +144,7 @@ impl Adsr {
     }
 }
 
-/// Topology-preserving state variable filter (Cytomic), low-pass output.
+/// Topology-preserving state variable filter (Cytomic).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Svf {
     ic1: f32,
@@ -154,6 +154,12 @@ pub struct Svf {
 impl Svf {
     #[inline]
     pub fn lowpass(&mut self, x: f32, cutoff: f32, res: f32, sr: f32) -> f32 {
+        self.tick(x, cutoff, res, sr).0
+    }
+
+    /// One sample; returns the (low, band, high)-pass outputs.
+    #[inline]
+    pub fn tick(&mut self, x: f32, cutoff: f32, res: f32, sr: f32) -> (f32, f32, f32) {
         let g = (PI * (cutoff / sr).min(0.49)).tan();
         let k = 2.0 - 2.0 * res;
         let a1 = 1.0 / (1.0 + g * (g + k));
@@ -164,11 +170,62 @@ impl Svf {
         let v2 = self.ic2 + a2 * self.ic1 + a3 * v3;
         self.ic1 = 2.0 * v1 - self.ic1;
         self.ic2 = 2.0 * v2 - self.ic2;
-        v2
+        (v2, v1, x - k * v1 - v2)
     }
 
     pub fn reset(&mut self) {
         *self = Svf::default();
+    }
+}
+
+/// Feedback comb with a one-pole low-pass in the loop (Freeverb).
+pub struct Comb {
+    buf: Vec<f32>,
+    i: usize,
+    store: f32,
+}
+
+impl Comb {
+    pub fn new(len: usize) -> Self {
+        Comb { buf: vec![0.0; len.max(1)], i: 0, store: 0.0 }
+    }
+
+    #[inline]
+    pub fn tick(&mut self, x: f32, feedback: f32, damp: f32) -> f32 {
+        let y = self.buf[self.i];
+        self.store = y * (1.0 - damp) + self.store * damp;
+        self.buf[self.i] = x + self.store * feedback;
+        self.i = (self.i + 1) % self.buf.len();
+        y
+    }
+
+    pub fn reset(&mut self) {
+        self.buf.fill(0.0);
+        self.store = 0.0;
+    }
+}
+
+/// Schroeder all-pass diffuser (Freeverb flavour, gain 0.5).
+pub struct Allpass {
+    buf: Vec<f32>,
+    i: usize,
+}
+
+impl Allpass {
+    pub fn new(len: usize) -> Self {
+        Allpass { buf: vec![0.0; len.max(1)], i: 0 }
+    }
+
+    #[inline]
+    pub fn tick(&mut self, x: f32) -> f32 {
+        let b = self.buf[self.i];
+        self.buf[self.i] = x + b * 0.5;
+        self.i = (self.i + 1) % self.buf.len();
+        b - x
+    }
+
+    pub fn reset(&mut self) {
+        self.buf.fill(0.0);
     }
 }
 
@@ -253,5 +310,42 @@ mod tests {
         };
         assert!(rms(100.0) > 0.6);
         assert!(rms(8000.0) < 0.01);
+    }
+
+    #[test]
+    fn highpass_attenuates_lows() {
+        let sr = 48000.0;
+        let rms = |hz: f32| {
+            let mut f = Svf::default();
+            let mut acc = 0.0;
+            for i in 0..48000 {
+                let x = (2.0 * PI * hz * i as f32 / sr).sin();
+                let y = f.tick(x, 2000.0, 0.0, sr).2;
+                if i > 4800 {
+                    acc += y * y;
+                }
+            }
+            (acc / 43200.0).sqrt()
+        };
+        assert!(rms(10000.0) > 0.6);
+        assert!(rms(50.0) < 0.01);
+    }
+
+    #[test]
+    fn comb_and_allpass_tail_decays() {
+        let mut c = Comb::new(100);
+        let mut a = Allpass::new(37);
+        let mut peak_late = 0.0f32;
+        let mut energy = 0.0;
+        for i in 0..48000 {
+            let x = if i == 0 { 1.0 } else { 0.0 };
+            let y = a.tick(c.tick(x, 0.84, 0.2));
+            energy += y * y;
+            if i > 40000 {
+                peak_late = peak_late.max(y.abs());
+            }
+        }
+        assert!(energy > 0.1);
+        assert!(peak_late < 1e-4);
     }
 }

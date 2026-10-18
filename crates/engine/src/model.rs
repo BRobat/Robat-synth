@@ -13,6 +13,10 @@ pub enum NodeKind {
     Amp,
     Delay,
     Out,
+    Filter,
+    Drive,
+    Reverb,
+    Chorus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,9 +90,41 @@ pub mod out_p {
     pub const PAIR: usize = 0;
     pub const LEVEL: usize = 1;
 }
+pub mod filter_p {
+    pub const MODE: usize = 0;
+    pub const CUTOFF: usize = 1;
+    pub const RES: usize = 2;
+    pub const DRIVE: usize = 3;
+}
+pub mod drive_p {
+    pub const SHAPE: usize = 0;
+    pub const DRIVE: usize = 1;
+    pub const BITS: usize = 2;
+    pub const RATE: usize = 3;
+    pub const MIX: usize = 4;
+    pub const LEVEL: usize = 5;
+}
+pub mod reverb_p {
+    pub const SIZE: usize = 0;
+    pub const DAMP: usize = 1;
+    pub const WIDTH: usize = 2;
+    pub const MIX: usize = 3;
+}
+pub mod chorus_p {
+    pub const RATE: usize = 0;
+    pub const DEPTH: usize = 1;
+    pub const TIME: usize = 2;
+    pub const FEEDBACK: usize = 3;
+    pub const MIX: usize = 4;
+}
 
 pub const WAVES: &[&str] = &["sine", "saw", "square", "tri", "noise"];
 pub const PAIRS: &[&str] = &["1-2", "3-4", "5-6", "7-8", "9-10", "11-12", "13-14", "15-16"];
+pub const FILTER_MODES: &[&str] = &["lp", "bp", "hp", "notch"];
+pub const SHAPES: &[&str] = &["soft", "hard", "fold"];
+
+/// The level of a single cable, edited like a param.
+pub const CABLE_LEVEL: ParamSpec = p("level", 0.0, 2.0, 1.0, Curve::Lin, "");
 
 static SEQ_PARAMS: [ParamSpec; 6] = [
     labeled("mode", 0.0, &["grid", "pattern"]),
@@ -121,8 +157,49 @@ static DELAY_PARAMS: [ParamSpec; 3] =
 
 static OUT_PARAMS: [ParamSpec; 2] = [labeled("channels", 0.0, PAIRS), p("level", 0.0, 1.0, 0.8, Curve::Lin, "")];
 
+static FILTER_PARAMS: [ParamSpec; 4] = [
+    labeled("mode", 0.0, FILTER_MODES),
+    p("cutoff", 20.0, 18000.0, 1200.0, Curve::Log, "Hz"),
+    p("res", 0.0, 0.98, 0.3, Curve::Lin, ""),
+    p("drive", 0.0, 1.0, 0.0, Curve::Lin, ""),
+];
+
+static DRIVE_PARAMS: [ParamSpec; 6] = [
+    labeled("shape", 0.0, SHAPES),
+    p("drive", 0.0, 1.0, 0.3, Curve::Lin, ""),
+    p("bits", 1.0, 16.0, 16.0, Curve::Int, ""),
+    p("rate", 1.0, 32.0, 1.0, Curve::Int, "÷"),
+    p("mix", 0.0, 1.0, 1.0, Curve::Lin, ""),
+    p("level", 0.0, 1.0, 0.7, Curve::Lin, ""),
+];
+
+static REVERB_PARAMS: [ParamSpec; 4] = [
+    p("size", 0.0, 1.0, 0.7, Curve::Lin, ""),
+    p("damp", 0.0, 1.0, 0.4, Curve::Lin, ""),
+    p("width", 0.0, 1.0, 1.0, Curve::Lin, ""),
+    p("mix", 0.0, 1.0, 0.3, Curve::Lin, ""),
+];
+
+static CHORUS_PARAMS: [ParamSpec; 5] = [
+    p("rate", 0.05, 10.0, 0.6, Curve::Log, "Hz"),
+    p("depth", 0.0, 1.0, 0.5, Curve::Lin, ""),
+    p("time", 0.5, 30.0, 12.0, Curve::Log, "ms"),
+    p("feedback", -0.95, 0.95, 0.0, Curve::Lin, ""),
+    p("mix", 0.0, 1.0, 0.5, Curve::Lin, ""),
+];
+
 impl NodeKind {
-    pub const ALL: [NodeKind; 5] = [NodeKind::Seq, NodeKind::Synth, NodeKind::Amp, NodeKind::Delay, NodeKind::Out];
+    pub const ALL: [NodeKind; 9] = [
+        NodeKind::Seq,
+        NodeKind::Synth,
+        NodeKind::Amp,
+        NodeKind::Filter,
+        NodeKind::Drive,
+        NodeKind::Delay,
+        NodeKind::Chorus,
+        NodeKind::Reverb,
+        NodeKind::Out,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -131,6 +208,10 @@ impl NodeKind {
             NodeKind::Amp => "amp",
             NodeKind::Delay => "delay",
             NodeKind::Out => "out",
+            NodeKind::Filter => "filter",
+            NodeKind::Drive => "drive",
+            NodeKind::Reverb => "reverb",
+            NodeKind::Chorus => "chorus",
         }
     }
 
@@ -138,15 +219,15 @@ impl NodeKind {
         match self {
             NodeKind::Seq => Port::None,
             NodeKind::Synth => Port::Events,
-            NodeKind::Amp | NodeKind::Delay | NodeKind::Out => Port::Audio,
+            _ => Port::Audio,
         }
     }
 
     pub fn output(self) -> Port {
         match self {
             NodeKind::Seq => Port::Events,
-            NodeKind::Synth | NodeKind::Amp | NodeKind::Delay => Port::Audio,
             NodeKind::Out => Port::None,
+            _ => Port::Audio,
         }
     }
 
@@ -157,6 +238,10 @@ impl NodeKind {
             NodeKind::Amp => &AMP_PARAMS,
             NodeKind::Delay => &DELAY_PARAMS,
             NodeKind::Out => &OUT_PARAMS,
+            NodeKind::Filter => &FILTER_PARAMS,
+            NodeKind::Drive => &DRIVE_PARAMS,
+            NodeKind::Reverb => &REVERB_PARAMS,
+            NodeKind::Chorus => &CHORUS_PARAMS,
         }
     }
 
@@ -271,12 +356,44 @@ impl NodeModel {
     }
 }
 
+/// A cable. Audio cables scale the signal by `gain`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "EdgeRepr")]
+pub struct Edge {
+    pub from: u32,
+    pub to: u32,
+    pub gain: f32,
+}
+
+impl Edge {
+    pub fn new(from: u32, to: u32) -> Self {
+        Edge { from, to, gain: CABLE_LEVEL.default }
+    }
+}
+
+/// Older projects stored cables as `[from, to]` pairs.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum EdgeRepr {
+    Pair(u32, u32),
+    Full { from: u32, to: u32, gain: f32 },
+}
+
+impl From<EdgeRepr> for Edge {
+    fn from(r: EdgeRepr) -> Self {
+        match r {
+            EdgeRepr::Pair(from, to) => Edge::new(from, to),
+            EdgeRepr::Full { from, to, gain } => Edge { from, to, gain: CABLE_LEVEL.clamp(gain) },
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub bpm: f32,
     pub nodes: Vec<NodeModel>,
-    /// Connections `(from, to)` by node id.
-    pub edges: Vec<(u32, u32)>,
+    /// Connections by node id. They may form loops.
+    pub edges: Vec<Edge>,
     #[serde(default)]
     pub device: Option<String>,
 }
@@ -300,7 +417,11 @@ impl Project {
         (0..MAX_NODES as u32).find(|id| self.node(*id).is_none())
     }
 
-    /// Whether adding `from -> to` would create a cycle.
+    pub fn edge(&self, from: u32, to: u32) -> Option<&Edge> {
+        self.edges.iter().find(|e| e.from == from && e.to == to)
+    }
+
+    /// Whether adding `from -> to` would create a loop.
     pub fn would_cycle(&self, from: u32, to: u32) -> bool {
         let mut stack = vec![to];
         let mut seen = vec![false; MAX_NODES];
@@ -311,30 +432,47 @@ impl Project {
             if std::mem::replace(&mut seen[n as usize], true) {
                 continue;
             }
-            stack.extend(self.edges.iter().filter(|(a, _)| *a == n).map(|(_, b)| *b));
+            stack.extend(self.edges.iter().filter(|e| e.from == n).map(|e| e.to));
         }
         false
     }
 
-    /// Nodes in dependency order (sources first).
-    pub fn topo_order(&self) -> Vec<u32> {
-        let mut indeg = vec![0usize; MAX_NODES];
-        for (_, b) in &self.edges {
-            indeg[*b as usize] += 1;
-        }
-        let mut ready: Vec<u32> = self.nodes.iter().map(|n| n.id).filter(|id| indeg[*id as usize] == 0).collect();
-        ready.reverse();
-        let mut order = Vec::with_capacity(self.nodes.len());
-        while let Some(n) = ready.pop() {
-            order.push(n);
-            for (_, b) in self.edges.iter().filter(|(a, _)| *a == n) {
-                indeg[*b as usize] -= 1;
-                if indeg[*b as usize] == 0 {
-                    ready.push(*b);
-                }
+    /// Every node in processing order: sources first, each node before the
+    /// nodes it feeds, except along loops (see [`Project::feedback_edges`]).
+    /// This is the reverse post-order of a depth-first walk from the sources,
+    /// so only the edges that close a loop run backwards.
+    pub fn process_order(&self) -> Vec<u32> {
+        fn visit(pr: &Project, n: u32, seen: &mut [bool], post: &mut Vec<u32>) {
+            if std::mem::replace(&mut seen[n as usize], true) {
+                return;
             }
+            for e in pr.edges.iter().filter(|e| e.from == n) {
+                visit(pr, e.to, seen, post);
+            }
+            post.push(n);
         }
-        order
+        let mut seen = vec![false; MAX_NODES];
+        let mut post = Vec::with_capacity(self.nodes.len());
+        let has_input = |id: u32| self.edges.iter().any(|e| e.to == id);
+        let sources = self.nodes.iter().map(|n| n.id).filter(|id| !has_input(*id));
+        // Nodes only reachable through a loop start wherever the loop is entered.
+        let rest = self.nodes.iter().map(|n| n.id);
+        for id in sources.rev().chain(rest.rev()) {
+            visit(self, id, &mut seen, &mut post);
+        }
+        post.reverse();
+        post
+    }
+
+    /// Edges that run backwards in [`Project::process_order`]: they close a
+    /// loop and carry the previous block's audio.
+    pub fn feedback_edges(&self) -> Vec<Edge> {
+        let order = self.process_order();
+        let mut pos = vec![0usize; MAX_NODES];
+        for (i, id) in order.iter().enumerate() {
+            pos[*id as usize] = i;
+        }
+        self.edges.iter().copied().filter(|e| pos[e.from as usize] >= pos[e.to as usize]).collect()
     }
 
     /// A small two-voice starter: a pattern bass on 1-2 and a grid lead
@@ -372,7 +510,7 @@ impl Project {
         lead_out.params[out_p::PAIR] = 1.0;
 
         pr.nodes = vec![bass_seq, bass, bass_out, lead_seq, lead, delay, lead_out];
-        pr.edges = vec![(0, 1), (1, 2), (3, 4), (4, 5), (5, 6)];
+        pr.edges = [(0, 1), (1, 2), (3, 4), (4, 5), (5, 6)].into_iter().map(|(a, b)| Edge::new(a, b)).collect();
         pr
     }
 }
@@ -382,16 +520,44 @@ mod tests {
     use super::*;
 
     #[test]
-    fn topo_and_cycles() {
+    fn order_and_cycles() {
         let pr = Project::demo();
-        let order = pr.topo_order();
+        let order = pr.process_order();
         assert_eq!(order.len(), pr.nodes.len());
         let pos = |id| order.iter().position(|x| *x == id).unwrap();
-        for (a, b) in &pr.edges {
-            assert!(pos(*a) < pos(*b));
+        for e in &pr.edges {
+            assert!(pos(e.from) < pos(e.to));
         }
+        assert!(pr.feedback_edges().is_empty());
         assert!(pr.would_cycle(5, 4));
         assert!(!pr.would_cycle(1, 5));
+    }
+
+    #[test]
+    fn loops_keep_every_node() {
+        let mut pr = Project::demo();
+        let amp = NodeModel::new(7, NodeKind::Amp, 2, 2);
+        pr.nodes.push(amp);
+        // delay 5 -> amp 7 -> delay 5, plus delay 5 feeding itself.
+        pr.edges.extend([Edge::new(5, 7), Edge::new(7, 5), Edge::new(5, 5)]);
+        let order = pr.process_order();
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(sorted, vec![0, 1, 2, 3, 4, 5, 6, 7]);
+        let fb = pr.feedback_edges();
+        assert_eq!(fb.len(), 2, "{fb:?}");
+        assert!(fb.contains(&Edge::new(5, 5)));
+        // Exactly one edge of the 5 <-> 7 loop runs backwards.
+        assert_eq!(fb.iter().filter(|e| (e.from, e.to) == (5, 7) || (e.from, e.to) == (7, 5)).count(), 1);
+        // The lead synth still comes before the delay it feeds.
+        let pos = |id| order.iter().position(|x| *x == id).unwrap();
+        assert!(pos(4) < pos(5));
+    }
+
+    #[test]
+    fn old_edge_format_loads() {
+        let e: Vec<Edge> = serde_json::from_str("[[1, 2], {\"from\": 3, \"to\": 4, \"gain\": 0.5}]").unwrap();
+        assert_eq!(e, vec![Edge::new(1, 2), Edge { from: 3, to: 4, gain: 0.5 }]);
     }
 
     #[test]

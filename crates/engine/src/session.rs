@@ -1,8 +1,8 @@
 //! UI-thread owner of the project. Every edit updates the model and is
 //! mirrored to the audio thread as commands.
 
-use crate::core::{new_engine, Command, EngineCore, EngineHandle, Meters, Slot, Structure};
-use crate::model::{NodeKind, NodeModel, Port, Project, SeqData};
+use crate::core::{new_engine, Command, EngineCore, EngineHandle, Meters, Slot, SlotInput, Structure};
+use crate::model::{Edge, NodeKind, NodeModel, Port, Project, SeqData, CABLE_LEVEL};
 use crate::nodes::{make_processor, pattern_table, steps_data, NodeData};
 use pattern::ParseError;
 use std::collections::VecDeque;
@@ -20,7 +20,6 @@ pub enum EditError {
     Full,
     NoSuchNode,
     Incompatible,
-    Cycle,
     Duplicate,
 }
 
@@ -30,7 +29,6 @@ impl std::fmt::Display for EditError {
             EditError::Full => "node limit reached",
             EditError::NoSuchNode => "no such node",
             EditError::Incompatible => "those ports don't fit",
-            EditError::Cycle => "that would make a loop",
             EditError::Duplicate => "already connected",
         })
     }
@@ -95,18 +93,20 @@ impl Session {
     }
 
     fn rebuild(&mut self) {
-        let order = self.project.topo_order();
+        let order = self.project.process_order();
         let index_of = |id: u32| order.iter().position(|x| *x == id);
         let slots = order
             .iter()
             .map(|&id| {
                 let node = self.project.node(id).unwrap();
                 let (mut audio, mut events) = (Vec::new(), Vec::new());
-                for (from, _) in self.project.edges.iter().filter(|(_, to)| *to == id) {
-                    let src = self.project.node(*from).unwrap();
+                for e in self.project.edges.iter().filter(|e| e.to == id) {
+                    let src = self.project.node(e.from).unwrap();
+                    let slot = index_of(e.from).unwrap();
                     match src.kind.output() {
-                        Port::Audio => audio.push(index_of(*from).unwrap()),
-                        Port::Events => events.push(index_of(*from).unwrap()),
+                        Port::Audio => audio.push(SlotInput::new(slot, e.from, e.gain)),
+                        // Events only ever flow forwards: no node both takes and makes them.
+                        Port::Events => events.push(slot),
                         Port::None => {}
                     }
                 }
@@ -139,7 +139,7 @@ impl Session {
 
     pub fn remove_node(&mut self, id: u32) {
         self.project.nodes.retain(|n| n.id != id);
-        self.project.edges.retain(|(a, b)| *a != id && *b != id);
+        self.project.edges.retain(|e| e.from != id && e.to != id);
         self.rebuild();
         self.send(Command::RemoveProc(id));
     }
@@ -156,20 +156,26 @@ impl Session {
         if !a.can_feed(b) {
             return Err(EditError::Incompatible);
         }
-        if self.project.edges.contains(&(from, to)) {
+        if self.project.edge(from, to).is_some() {
             return Err(EditError::Duplicate);
         }
-        if self.project.would_cycle(from, to) {
-            return Err(EditError::Cycle);
-        }
-        self.project.edges.push((from, to));
+        // Loops (and a node feeding itself) are fine: see `Project::feedback_edges`.
+        self.project.edges.push(Edge::new(from, to));
         self.rebuild();
         Ok(())
     }
 
     pub fn disconnect(&mut self, from: u32, to: u32) {
-        self.project.edges.retain(|e| *e != (from, to));
+        self.project.edges.retain(|e| (e.from, e.to) != (from, to));
         self.rebuild();
+    }
+
+    /// Sets the level of the cable `from -> to`.
+    pub fn set_edge_gain(&mut self, from: u32, to: u32, gain: f32) {
+        let Some(e) = self.project.edges.iter_mut().find(|e| (e.from, e.to) == (from, to)) else { return };
+        e.gain = CABLE_LEVEL.clamp(gain);
+        let gain = e.gain;
+        self.send(Command::EdgeGain { from, to, gain });
     }
 
     pub fn set_param(&mut self, id: u32, idx: usize, value: f32) {
@@ -254,7 +260,14 @@ impl Session {
         p.nodes.retain(|n| (n.id as usize) < crate::model::MAX_NODES);
         p.nodes.dedup_by_key(|n| n.id);
         let ids: Vec<u32> = p.nodes.iter().map(|n| n.id).collect();
-        p.edges.retain(|(a, b)| ids.contains(a) && ids.contains(b));
+        p.edges.retain(|e| ids.contains(&e.from) && ids.contains(&e.to));
+        let mut seen = Vec::new();
+        p.edges.retain(|e| {
+            let key = (e.from, e.to);
+            let fresh = !seen.contains(&key);
+            seen.push(key);
+            fresh
+        });
         Ok(p)
     }
 }

@@ -2,9 +2,9 @@
 //! the status line and overlays.
 
 use crate::theme::*;
-use crate::ui::{label, App, Focus, Mode};
+use crate::ui::{label, App, Focus, Mode, Row};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
-use engine::model::{seq_p, Curve, NodeKind, NodeModel, MAX_NODES, MAX_STEPS, PAIRS, WAVES};
+use engine::model::{seq_p, Curve, NodeKind, NodeModel, FILTER_MODES, MAX_NODES, MAX_STEPS, PAIRS, SHAPES, WAVES};
 use std::sync::atomic::Ordering::Relaxed;
 
 const CELL: Vec2 = vec2(190.0, 104.0);
@@ -49,9 +49,9 @@ impl Visuals {
                 if self.ripples.len() < 256 {
                     self.ripples.push((n.id, now));
                 }
-                for (a, b) in app_session.project.edges.iter().filter(|(a, _)| *a == n.id) {
+                for e in app_session.project.edges.iter().filter(|e| e.from == n.id) {
                     if self.pulses.len() < 256 {
-                        self.pulses.push((*a, *b, now));
+                        self.pulses.push((e.from, e.to, now));
                     }
                 }
             }
@@ -73,17 +73,32 @@ fn fade(c: Color32, a: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (a * 255.0) as u8)
 }
 
-fn bezier(a: Pos2, b: Pos2, t: f32) -> Pos2 {
-    let k = ((b.x - a.x).abs() * 0.5).max(40.0);
-    let (c1, c2) = (a + vec2(k, 0.0), b - vec2(k, 0.0));
+/// A point along the cable from output port `a` to input port `b`. Loop
+/// cables swing out of the way: over the node for a self-loop, under the
+/// nodes for one running backwards.
+fn bezier(a: Pos2, b: Pos2, back: bool, t: f32) -> Pos2 {
+    let (c1, c2) = if !back {
+        let k = ((b.x - a.x).abs() * 0.5).max(40.0);
+        (a + vec2(k, 0.0), b - vec2(k, 0.0))
+    } else if a.y == b.y && (a.x - b.x - NODE.x).abs() < 1.0 {
+        (a + vec2(50.0, -90.0), b + vec2(-50.0, -90.0))
+    } else {
+        let drop = NODE.y * 0.5 + 40.0 + (a.x - b.x).abs() * 0.08;
+        (pos2(a.x + 70.0, a.y.max(b.y) + drop), pos2(b.x - 70.0, a.y.max(b.y) + drop))
+    };
     let u = 1.0 - t;
     let p = a.to_vec2() * u * u * u + c1.to_vec2() * 3.0 * u * u * t + c2.to_vec2() * 3.0 * u * t * t + b.to_vec2() * t * t * t;
     p.to_pos2()
 }
 
-fn cable(p: &Painter, a: Pos2, b: Pos2, stroke: Stroke) {
-    let pts: Vec<Pos2> = (0..=24).map(|i| bezier(a, b, i as f32 / 24.0)).collect();
-    p.add(egui::Shape::line(pts, stroke));
+/// Loop cables are dashed.
+fn cable(p: &Painter, a: Pos2, b: Pos2, back: bool, stroke: Stroke) {
+    let pts: Vec<Pos2> = (0..=32).map(|i| bezier(a, b, back, i as f32 / 32.0)).collect();
+    if back {
+        p.extend(egui::Shape::dashed_line(&pts, stroke, 6.0, 4.0));
+    } else {
+        p.add(egui::Shape::line(pts, stroke));
+    }
 }
 
 fn text(p: &Painter, pos: Pos2, anchor: Align2, s: impl ToString, size: f32, c: Color32) -> Rect {
@@ -106,6 +121,17 @@ fn summary(n: &NodeModel, channels: usize) -> (String, Color32) {
         }
         NodeKind::Amp => (format!("×{:.2} ◦{:+.1}", v[0], v[1]), TEXT),
         NodeKind::Delay => (format!("{}/16 fb {:.2}", v[0] as i32, v[1]), TEXT),
+        NodeKind::Filter => {
+            let cut = v[1];
+            let cut = if cut >= 1000.0 { format!("{:.1}k", cut / 1000.0) } else { format!("{cut:.0}") };
+            (format!("{} {cut} q{:.2}", FILTER_MODES[v[0] as usize], v[2]), TEXT)
+        }
+        NodeKind::Drive => {
+            let crush = if v[2] < 16.0 { format!(" {}b", v[2] as i32) } else { String::new() };
+            (format!("{} {:.2}{crush}", SHAPES[v[0] as usize], v[1]), TEXT)
+        }
+        NodeKind::Reverb => (format!("size {:.2} mix {:.2}", v[0], v[3]), TEXT),
+        NodeKind::Chorus => (format!("{:.1}Hz {:.0}ms fb{:+.1}", v[0], v[2], v[3]), TEXT),
         NodeKind::Out => {
             let pair = v[0] as usize;
             let ok = 2 * pair + 1 < channels || (channels == 1 && pair == 0);
@@ -181,26 +207,35 @@ fn draw_canvas(app: &App, p: &Painter, canvas: Rect, now: f64, to_screen: &dyn F
     };
 
     // Cables, then pulses travelling along them.
-    for (a, b) in &pr.edges {
-        let (Some(na), Some(nb)) = (pr.node(*a), pr.node(*b)) else { continue };
+    let feedback = pr.feedback_edges();
+    let is_back = |a: u32, b: u32| feedback.iter().any(|e| (e.from, e.to) == (a, b));
+    for e in &pr.edges {
+        let (Some(na), Some(nb)) = (pr.node(e.from), pr.node(e.to)) else { continue };
         let (_, out, _) = ports(na);
         let (_, _, inp) = ports(nb);
-        let glow = app.visuals.flash[*a as usize];
+        let back = is_back(e.from, e.to);
+        let glow = app.visuals.flash[e.from as usize];
         let c = kind_color(na.kind);
-        cable(p, out, inp, Stroke::new(1.0 + glow, LINE.lerp_to_gamma(c, 0.25 + 0.6 * glow)));
+        // Quieter cables fade towards the background.
+        let level = 0.35 + 0.65 * (e.gain / 1.0).min(1.0);
+        cable(p, out, inp, back, Stroke::new(1.0 + glow + (e.gain - 1.0).max(0.0), LINE.lerp_to_gamma(c, (0.25 + 0.6 * glow) * level)));
+        if (e.gain - 1.0).abs() > 0.005 {
+            text(p, bezier(out, inp, back, 0.5) - vec2(0.0, 4.0), Align2::CENTER_BOTTOM, format!("×{:.2}", e.gain), 10.0, DIM);
+        }
     }
     for (a, b, t0) in &app.visuals.pulses {
         let (Some(na), Some(nb)) = (pr.node(*a), pr.node(*b)) else { continue };
         let t = ((now - t0) / PULSE_SECS) as f32;
-        let pos = bezier(ports(na).1, ports(nb).2, t);
+        let pos = bezier(ports(na).1, ports(nb).2, is_back(*a, *b), t);
         p.circle_filled(pos, 3.0, fade(kind_color(na.kind), 1.0 - t * 0.5));
     }
 
-    // Connection preview.
+    // Connection preview; a cable that would close a loop is drawn as one.
     if let Mode::Connect { from, target } = app.mode {
         if let (Some(a), Some(b)) = (pr.node(from), pr.node(target)) {
-            let ok = a.kind.can_feed(b.kind) && from != target;
-            cable(p, ports(a).1, ports(b).2, Stroke::new(2.0, if ok { ACCENT } else { ERROR }));
+            let ok = a.kind.can_feed(b.kind);
+            let back = from == target || pr.would_cycle(from, target);
+            cable(p, ports(a).1, ports(b).2, back, Stroke::new(2.0, if ok { ACCENT } else { ERROR }));
             let r = ports(b).0.expand(6.0);
             p.rect_stroke(r, 3.0, Stroke::new(1.0, if ok { ACCENT } else { ERROR }), StrokeKind::Outside);
         }
@@ -278,8 +313,8 @@ fn draw_inspector(app: &App, p: &Painter, rect: Rect, now: f64) {
     let x0 = rect.min.x + 16.0;
     let mut y = rect.min.y + 14.0;
     text(p, pos2(x0, y), Align2::LEFT_TOP, label(&app.session, n.id), 16.0, kind_color(n.kind));
-    let ins: Vec<String> = app.session.project.edges.iter().filter(|(_, b)| *b == n.id).map(|(a, _)| label(&app.session, *a)).collect();
-    let outs: Vec<String> = app.session.project.edges.iter().filter(|(a, _)| *a == n.id).map(|(_, b)| label(&app.session, *b)).collect();
+    let ins: Vec<String> = app.session.project.edges.iter().filter(|e| e.to == n.id).map(|e| label(&app.session, e.from)).collect();
+    let outs: Vec<String> = app.session.project.edges.iter().filter(|e| e.from == n.id).map(|e| label(&app.session, e.to)).collect();
     y += 24.0;
     if !ins.is_empty() {
         text(p, pos2(x0, y), Align2::LEFT_TOP, format!("← {}", ins.join(", ")), 11.0, DIM);
@@ -292,23 +327,32 @@ fn draw_inspector(app: &App, p: &Painter, rect: Rect, now: f64) {
     y += 10.0;
 
     let editing_params = matches!(app.mode, Mode::Edit(Focus::Params) | Mode::Value(_));
-    for (i, spec) in n.kind.params().iter().enumerate() {
+    for (i, row) in Row::all(&app.session, n.id).into_iter().enumerate() {
+        let (spec, v) = (row.spec(&app.session, n.id), row.value(&app.session, n.id));
+        let name = match row {
+            Row::Param(_) => spec.name.to_string(),
+            Row::Cable(from) => format!("← {}", label(&app.session, from)),
+        };
+        if i == n.kind.params().len() {
+            text(p, pos2(x0, y + 2.0), Align2::LEFT_TOP, "cable levels", 11.0, DIM);
+            y += 18.0;
+        }
         let focused = editing_params && app.param_focus == i;
         let row = Rect::from_min_size(pos2(rect.min.x + 6.0, y - 2.0), vec2(rect.width() - 12.0, 20.0));
         if focused {
             p.rect_filled(row, 2.0, fade(ACCENT, 0.10));
         }
         let c = if focused { ACCENT } else { TEXT };
-        text(p, pos2(x0, y), Align2::LEFT_TOP, spec.name, 13.0, c);
+        text(p, pos2(x0, y), Align2::LEFT_TOP, name, 13.0, c);
         let bar = Rect::from_min_size(pos2(x0 + 96.0, y + 5.0), vec2(110.0, 6.0));
         p.rect_filled(bar, 1.0, DOT);
-        let norm = spec.to_norm(n.params[i]);
+        let norm = spec.to_norm(v);
         if spec.curve != Curve::Int || spec.labels.is_empty() {
             p.rect_filled(Rect::from_min_size(bar.min, vec2(bar.width() * norm, bar.height())), 1.0, if focused { ACCENT } else { DIM });
         }
         let value = match (&app.mode, focused) {
             (Mode::Value(buf), true) => format!("={buf}▏"),
-            _ => spec.format(n.params[i]),
+            _ => spec.format(v),
         };
         text(p, pos2(rect.max.x - 16.0, y), Align2::RIGHT_TOP, value, 13.0, c);
         y += 22.0;
@@ -482,7 +526,7 @@ const HELP: &[(&str, &str)] = &[
     ("HJKL / shift+arrows", "move node"),
     ("tab / shift+tab", "cycle nodes"),
     ("a", "add node (auto-wires from selection)"),
-    ("c … enter", "connect selected → target"),
+    ("c … enter", "connect selected → target (loops ok)"),
     ("d", "disconnect"),
     ("x", "delete node"),
     ("y", "duplicate node"),
@@ -493,7 +537,7 @@ const HELP: &[(&str, &str)] = &[
     ("+ / -", "bpm"),
     (":", "command line"),
     ("edit", ""),
-    ("j/k  h/l  H/L", "param · adjust · coarse"),
+    ("j/k  h/l  H/L", "param / cable level · adjust · coarse"),
     ("=  0", "type value · reset to default"),
     ("tab", "seq: params ⇄ steps/pattern"),
     ("steps: h/l j/k J/K", "cursor · note · octave"),
