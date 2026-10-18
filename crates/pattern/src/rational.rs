@@ -93,6 +93,7 @@ impl Mul for Rational {
     }
 }
 
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl Div for Rational {
     type Output = Rational;
     fn div(self, o: Rational) -> Rational {

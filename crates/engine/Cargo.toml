@@ -1,0 +1,15 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Realtime node-graph audio engine for robat-synth"
+
+[dependencies]
+pattern = { path = "../pattern" }
+rtrb = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+hound = "3"
