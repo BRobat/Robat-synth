@@ -108,12 +108,31 @@ follow Logic (C3 = MIDI 60):
 
 Example: `c1 ~ c1 [~ c2] <eb1 g0> ~ c1 [bb0 c1]`
 
+## Mobile web version
+
+`web/` runs the same engine in the browser, built for phones: the Rust
+engine is compiled to WebAssembly and renders inside an `AudioWorklet`,
+with a touch UI on top (tap a node to edit it, drag to move, pinch to zoom,
+`+` to add, `connect →` then tap a target). Every `out` pair is mixed to the
+phone's stereo output. Patches autosave in the browser and export/import as
+the same `.json` files the desktop app uses.
+
+```sh
+web/build.sh --serve      # build into web/dist and serve on http://localhost:8080
+```
+
+Pushes to the `mobile-web` branch are deployed to GitHub Pages by
+`.github/workflows/pages.yml` (set *Settings → Pages → Source* to
+**GitHub Actions** once). On iPhone, turn the silent switch off if you hear
+nothing; "Add to Home Screen" makes it a full-screen app.
+
 ## Architecture
 
 ```
 crates/pattern  mini-notation parser + evaluator (exact rational time)
 crates/engine   realtime node graph: model, DSP, processors, Session
 app             egui/eframe UI, cpal (CoreAudio) device, keyboard modes
+web             WebAssembly bridge (C ABI) + touch UI and AudioWorklet in web/www
 ```
 
 The UI owns a `Session` (the project model). Each edit is mirrored to the

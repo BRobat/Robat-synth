@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#0a0a0c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="robat synth: a node-based synth with a Tidal-style pattern language, in your browser">
+  <title>robat synth</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="bar">
+    <button id="play" class="play" aria-label="play">▶</button>
+    <div class="bpm">
+      <button id="bpm-down" aria-label="slower">−</button>
+      <button id="bpm" class="bpm-value">120</button>
+      <button id="bpm-up" aria-label="faster">+</button>
+    </div>
+    <div class="cycle" id="cycle">stopped</div>
+    <button id="undo" aria-label="undo">↶</button>
+    <button id="menu-btn" aria-label="menu">☰</button>
+  </header>
+
+  <main id="stage">
+    <canvas id="canvas"></canvas>
+    <div id="banner" hidden></div>
+    <button id="add" class="fab" aria-label="add node">+</button>
+    <button id="fit" class="fab small" aria-label="fit view">⤢</button>
+  </main>
+
+  <section id="sheet" hidden>
+    <div class="grip" id="grip"></div>
+    <div id="sheet-body"></div>
+  </section>
+
+  <div id="overlay" hidden></div>
+  <div id="toast" hidden></div>
+
+  <noscript>robat synth needs JavaScript and WebAssembly.</noscript>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

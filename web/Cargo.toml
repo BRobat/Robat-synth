@@ -1,0 +1,15 @@
+[package]
+name = "robat-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WebAssembly bridge: runs the robat-synth engine in a browser AudioWorklet"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+engine = { path = "../crates/engine" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

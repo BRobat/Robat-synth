@@ -2188,6 +2188,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "robat-web"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rtrb"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

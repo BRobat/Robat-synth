@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pattern", "crates/engine", "app"]
+members = ["crates/pattern", "crates/engine", "app", "web"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,3 +16,10 @@ opt-level = 3
 
 [profile.release]
 lto = "thin"
+
+[profile.web]
+inherits = "release"
+lto = "fat"
+opt-level = 3
+codegen-units = 1
+panic = "abort"
