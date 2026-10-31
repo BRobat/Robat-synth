@@ -42,6 +42,8 @@ pub enum Op {
     Move { id: u32, x: i32, y: i32 },
     Connect { from: u32, to: u32 },
     Disconnect { from: u32, to: u32 },
+    /// Level of one audio cable.
+    EdgeGain { from: u32, to: u32, gain: f32 },
     Param { id: u32, idx: usize, value: f32 },
     Mute { id: u32 },
     Steps { id: u32, steps: Vec<Step> },
@@ -135,7 +137,11 @@ impl Bridge {
         };
         out.insert("ok".into(), ok.into());
         if self.core.is_none() {
-            out.insert("project".into(), serde_json::to_value(&self.session.project).unwrap_or(Value::Null));
+            let pr = &self.session.project;
+            out.insert("project".into(), serde_json::to_value(pr).unwrap_or(Value::Null));
+            // Cables that close a loop (drawn dashed; they carry the previous block).
+            let fb: Vec<[u32; 2]> = pr.feedback_edges().iter().map(|e| [e.from, e.to]).collect();
+            out.insert("feedback".into(), fb.into());
         }
         Value::Object(out).to_string()
     }
@@ -185,6 +191,12 @@ impl Bridge {
             }
             Op::Disconnect { from, to } => {
                 s.disconnect(from, to);
+                none()
+            }
+            Op::EdgeGain { from, to, gain } => {
+                if gain.is_finite() {
+                    s.set_edge_gain(from, to, gain);
+                }
                 none()
             }
             Op::Param { id, idx, value } => {
@@ -382,6 +394,7 @@ mod tests {
             json!({"op": "nope"}),
             json!({"op": "remove", "id": 9999}),
             json!({"op": "connect", "from": 0, "to": 2}),
+            json!({"op": "connect", "from": 1, "to": 2}),
             json!({"op": "add_node", "kind": "laser", "x": 0, "y": 0}),
             json!({"op": "load", "project": {"bpm": "fast"}}),
         ] {
@@ -389,6 +402,31 @@ mod tests {
         }
         let r = call(&mut b, json!({"op": "pattern", "id": 0, "src": "c3 [e3"}));
         assert!(r["patternError"]["msg"].is_string());
-        assert!(call(&mut b, json!({"op": "specs"}))["kinds"].as_array().unwrap().len() == 5);
+        assert!(call(&mut b, json!({"op": "specs"}))["kinds"].as_array().unwrap().len() == 9);
+    }
+
+    #[test]
+    fn loops_and_cable_levels() {
+        let mut ui = Bridge::new(48000.0, false);
+        let mut audio = Bridge::new(48000.0, true);
+        for op in [
+            json!({"op": "demo"}),
+            json!({"op": "add_node", "kind": "reverb", "x": 3, "y": 2}),
+            json!({"op": "connect", "from": 5, "to": 7}),
+            json!({"op": "connect", "from": 7, "to": 5}),
+            json!({"op": "connect", "from": 7, "to": 7}),
+            json!({"op": "edge_gain", "from": 7, "to": 5, "gain": 0.4}),
+            json!({"op": "play", "on": true}),
+        ] {
+            assert_eq!(call(&mut audio, op.clone())["ok"], true, "{op}");
+            let r = call(&mut ui, op.clone());
+            assert_eq!(r["ok"], true, "{op}: {r}");
+        }
+        let r = call(&mut ui, json!({"op": "project"}));
+        assert_eq!(r["feedback"].as_array().unwrap().len(), 2, "{}", r["feedback"]);
+        let e = r["project"]["edges"].as_array().unwrap().iter().find(|e| e["from"] == 7 && e["to"] == 5).unwrap().clone();
+        assert!((e["gain"].as_f64().unwrap() - 0.4).abs() < 1e-6);
+        let energy: f32 = (0..400).map(|_| audio.process(128).iter().map(|x| x * x).sum::<f32>()).sum();
+        assert!(energy.is_finite() && energy > 1.0);
     }
 }

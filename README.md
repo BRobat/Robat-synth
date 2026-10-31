@@ -132,7 +132,7 @@ Example: `c1 ~ c1 [~ c2] <eb1 g0> ~ c1 [bb0 c1]`
 engine is compiled to WebAssembly and renders inside an `AudioWorklet`,
 with a touch UI on top (tap a node to edit it, drag to move, pinch to zoom,
 `+` to add, `connect →` then tap a target). Every `out` pair is mixed to the
-phone's stereo output. Patches autosave in the browser and export/import as
+phone's stereo output. All node types, cable levels and loops work as on desktop. Patches autosave in the browser and export/import as
 the same `.json` files the desktop app uses.
 
 ```sh

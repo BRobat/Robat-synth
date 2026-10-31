@@ -11,14 +11,21 @@ const PULSE_SECS = 0.28;
 const UNDO_DEPTH = 100;
 const AUTOSAVE_KEY = "robat.autosave";
 const PROJECTS_KEY = "robat.projects";
-const COLORS = { seq: "#46dce6", synth: "#ff46a0", amp: "#aaaab4", delay: "#966eff", out: "#5aff8c" };
+const COLORS = {
+  seq: "#46dce6", synth: "#ff46a0", amp: "#aaaab4", delay: "#966eff", out: "#5aff8c",
+  filter: "#ffaa3c", drive: "#ff5a46", reverb: "#5a96ff", chorus: "#c878ff",
+};
 const ACCENT = "#d6ff40";
 const ERROR = "#ff5050";
 const KIND_HELP = {
   seq: "step grid or pattern → notes",
   synth: "notes → audio · 8 voices, filter",
   amp: "audio → audio · gain, pan",
+  filter: "audio → audio · lp/bp/hp/notch",
+  drive: "audio → audio · saturate, fold, crush",
   delay: "audio → audio · tempo-synced echo",
+  chorus: "audio → audio · chorus / flanger",
+  reverb: "audio → audio · room to cathedral",
   out: "audio → speakers",
 };
 const NOTE_NAMES = ["c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b"];
@@ -61,6 +68,7 @@ const state = {
   wasmBytes: null,
   specs: null,
   project: { bpm: 120, nodes: [], edges: [] },
+  feedback: new Set(), // "from-to" of cables that close a loop
   selected: null,
   connectFrom: null,
   undo: [],
@@ -124,11 +132,18 @@ function edit(op, { snapshot = true, quiet = false } = {}) {
     return r;
   }
   if (snapshot && JSON.stringify(r.project) !== before) pushUndo(before);
-  state.project = r.project;
+  setProject(r);
   sendAudio(op);
   scheduleSave();
   return r;
 }
+
+function setProject(r) {
+  state.project = r.project;
+  state.feedback = new Set((r.feedback || []).map(([a, b]) => `${a}-${b}`));
+}
+const isLoop = (e) => state.feedback.has(`${e.from}-${e.to}`);
+const audioOut = (n) => specOf(kindOf(n)).output === "audio";
 
 function pushUndo(json) {
   state.undo.push(json);
@@ -282,14 +297,44 @@ function nodeAt(sx, sy) {
   return null;
 }
 
-function cubic(a, b, t) {
-  const k = Math.max(Math.abs(b.x - a.x) * 0.5, 40);
-  const c1 = { x: a.x + k, y: a.y }, c2 = { x: b.x - k, y: b.y };
-  const u = 1 - t;
-  return {
-    x: a.x * u * u * u + c1.x * 3 * u * u * t + c2.x * 3 * u * t * t + b.x * t * t * t,
-    y: a.y * u * u * u + c1.y * 3 * u * u * t + c2.y * 3 * u * t * t + b.y * t * t * t,
-  };
+/** A cable as a polyline: a smooth curve forwards, or (for a cable that
+ *  closes a loop) a route out, under both nodes and back in. */
+function cablePath(pa, pb, loop) {
+  const s = { x: pa.x + NODE.w, y: pa.y + NODE.h / 2 }, e = { x: pb.x, y: pb.y + NODE.h / 2 };
+  if (loop) {
+    const low = Math.max(pa.y, pb.y) + NODE.h + 22;
+    return [s, { x: s.x + 22, y: s.y }, { x: s.x + 22, y: low }, { x: e.x - 22, y: low }, { x: e.x - 22, y: e.y }, e];
+  }
+  const k = Math.max(Math.abs(e.x - s.x) * 0.5, 40);
+  const pts = [];
+  for (let i = 0; i <= 24; i++) {
+    const t = i / 24, u = 1 - t;
+    pts.push({
+      x: s.x * u * u * u + (s.x + k) * 3 * u * u * t + (e.x - k) * 3 * u * t * t + e.x * t * t * t,
+      y: s.y * u * u * u + s.y * 3 * u * u * t + e.y * 3 * u * t * t + e.y * t * t * t,
+    });
+  }
+  return pts;
+}
+
+/** The point a fraction `t` of the way along a polyline. */
+function along(pts, t) {
+  const lens = [];
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const l = Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    lens.push(l);
+    total += l;
+  }
+  let d = Math.max(0, Math.min(1, t)) * total;
+  for (let i = 0; i < lens.length; i++) {
+    if (d <= lens[i] || i === lens.length - 1) {
+      const f = lens[i] ? Math.min(1, d / lens[i]) : 0;
+      return { x: pts[i].x + (pts[i + 1].x - pts[i].x) * f, y: pts[i].y + (pts[i + 1].y - pts[i].y) * f };
+    }
+    d -= lens[i];
+  }
+  return pts[pts.length - 1];
 }
 
 function rgba(hex, a) {
@@ -327,8 +372,8 @@ function updateVisuals(now, dt) {
     if (last === undefined || t === last) continue;
     v.flash.set(n.id, 1);
     if (v.ripples.length < 256) v.ripples.push({ id: n.id, t: now });
-    for (const [a, b] of state.project.edges) {
-      if (a === n.id && v.pulses.length < 256) v.pulses.push({ a, b, t: now });
+    for (const e of state.project.edges) {
+      if (e.from === n.id && v.pulses.length < 256) v.pulses.push({ a: e.from, b: e.to, t: now });
     }
   }
 }
@@ -347,6 +392,10 @@ function summary(n) {
     }
     case "amp": return `gain ${p[0].toFixed(2)} · pan ${p[1].toFixed(2)}`;
     case "delay": return `${p[0]}/16 · fb ${p[1].toFixed(2)}`;
+    case "filter": return `${specOf("filter").params[0].labels[p[0]]} · ${fmt(specOf("filter").params[1], p[1])}`;
+    case "drive": return `${specOf("drive").params[0].labels[p[0]]} · ${p[1].toFixed(2)}${p[2] < 16 ? ` · ${p[2]} bit` : ""}`;
+    case "reverb": return `size ${p[0].toFixed(2)} · mix ${p[3].toFixed(2)}`;
+    case "chorus": return `${fmt(specOf("chorus").params[0], p[0])} · mix ${p[4].toFixed(2)}`;
     case "out": return `ch ${specOf("out").params[0].labels[p[0]]} · ${p[1].toFixed(2)}`;
   }
   return "";
@@ -445,26 +494,41 @@ function draw(now) {
   const posOf = (n) => (drag && drag.id === n.id && drag.moved ? drag.pos : worldOf(n));
 
   // cables
-  for (const [a, b] of state.project.edges) {
-    const na = nodeById(a), nb = nodeById(b);
+  g.lineJoin = "round";
+  for (const edge of state.project.edges) {
+    const na = nodeById(edge.from), nb = nodeById(edge.to);
     if (!na || !nb) continue;
-    const pa = posOf(na), pb = posOf(nb);
-    const s = { x: pa.x + NODE.w, y: pa.y + NODE.h / 2 }, e = { x: pb.x, y: pb.y + NODE.h / 2 };
-    const k = Math.max(Math.abs(e.x - s.x) * 0.5, 40);
+    const loop = isLoop(edge);
+    const pts = cablePath(posOf(na), posOf(nb), loop);
     g.beginPath();
-    g.moveTo(s.x, s.y);
-    g.bezierCurveTo(s.x + k, s.y, e.x - k, e.y, e.x, e.y);
-    g.lineWidth = 2;
+    g.moveTo(pts[0].x, pts[0].y);
+    for (const q of pts.slice(1)) g.lineTo(q.x, q.y);
+    g.lineWidth = 1 + Math.min(2, edge.gain) * 1.2;
+    g.setLineDash(loop ? [7, 6] : []);
     g.strokeStyle = rgba(COLORS[kindOf(na)], na.muted ? 0.15 : 0.45);
     g.stroke();
+    g.setLineDash([]);
+    if (Math.abs(edge.gain - 1) > 0.005 && audioOut(na)) {
+      const m = along(pts, 0.5);
+      const text = `×${edge.gain.toFixed(2)}`;
+      g.font = "11px ui-monospace, Menlo, monospace";
+      const w = g.measureText(text).width + 8;
+      g.fillStyle = "#0a0a0c";
+      g.fillRect(m.x - w / 2, m.y - 8, w, 16);
+      g.fillStyle = COLORS[kindOf(na)];
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.fillText(text, m.x, m.y);
+      g.textAlign = "start";
+      g.textBaseline = "alphabetic";
+    }
   }
   // pulses running along cables
   for (const p of state.vis.pulses) {
     const na = nodeById(p.a), nb = nodeById(p.b);
     if (!na || !nb) continue;
-    const pa = posOf(na), pb = posOf(nb);
     const t = (now - p.t) / PULSE_SECS;
-    const q = cubic({ x: pa.x + NODE.w, y: pa.y + NODE.h / 2 }, { x: pb.x, y: pb.y + NODE.h / 2 }, t);
+    const q = along(cablePath(posOf(na), posOf(nb), state.feedback.has(`${p.a}-${p.b}`)), t);
     g.fillStyle = rgba(COLORS[kindOf(na)], 1 - t * 0.6);
     g.beginPath();
     g.arc(q.x, q.y, 4.5, 0, 7);
@@ -644,8 +708,8 @@ function moveNode(id, cell) {
 
 function tapNode(id) {
   if (state.connectFrom !== null) {
-    if (id === state.connectFrom) return cancelConnect();
     const from = state.connectFrom;
+    if (id === from && !canFeed(kindOf(nodeById(id)), kindOf(nodeById(id)))) return cancelConnect();
     const r = edit({ op: "connect", from, to: id });
     if (r.ok) {
       toast(`${label(nodeById(from))} → ${label(nodeById(id))}`);
@@ -686,7 +750,9 @@ function renderBanner() {
   b.hidden = state.connectFrom === null;
   b.replaceChildren();
   if (state.connectFrom === null) return;
-  b.append(el("span", {}, `connect ${label(nodeById(state.connectFrom))} → tap a target`), el("button", { onclick: cancelConnect }, "cancel"));
+  const n = nodeById(state.connectFrom);
+  const selfOk = canFeed(kindOf(n), kindOf(n));
+  b.append(el("span", {}, `connect ${label(n)} → tap a target${selfOk ? " (itself = loop)" : ""}`), el("button", { onclick: cancelConnect }, "cancel"));
 }
 
 // ---------------------------------------------------------- inspector --
@@ -852,6 +918,41 @@ function patternEditor(n) {
     msg);
 }
 
+/** One cable in the inspector: name, loop mark, disconnect, and a level
+ *  slider for audio cables coming into this node. */
+function cableRow(n, e) {
+  const a = nodeById(e.from), b = nodeById(e.to);
+  const loop = isLoop(e);
+  const name = `${label(a)} → ${e.from === e.to ? "itself" : label(b)}${loop ? "  ↺ loop" : ""}`;
+  const row = el("div", { class: "link" },
+    el("span", {}, name),
+    el("button", { "aria-label": "disconnect", onclick: () => { edit({ op: "disconnect", from: e.from, to: e.to }); renderSheet(); } }, "✕"));
+  if (e.to !== n.id || !audioOut(a)) return row;
+  const p = { name: "level", min: 0, max: 2, default: 1, curve: "lin", unit: "", labels: [] };
+  const valueBtn = el("button", { class: "value" }, fmt(p, e.gain));
+  const range = el("input", { type: "range", min: 0, max: 1000, step: 1, value: Math.round(toNorm(p, e.gain) * 1000), style: `--k:${COLORS[kindOf(a)]}` });
+  const paint = () => range.style.setProperty("--fill", `${range.value / 10}%`);
+  paint();
+  let snapped = false;
+  range.addEventListener("input", () => {
+    if (!snapped) { pushUndo(JSON.stringify(state.project)); snapped = true; }
+    const gain = fromNorm(p, range.value / 1000);
+    edit({ op: "edge_gain", from: e.from, to: e.to, gain }, { snapshot: false });
+    valueBtn.textContent = fmt(p, gain);
+    paint();
+  });
+  range.addEventListener("change", () => (snapped = false));
+  valueBtn.addEventListener("click", () => {
+    const s = prompt("cable level (0–2), empty = 1", String(+e.gain.toFixed(3)));
+    if (s === null) return;
+    const gain = s.trim() === "" ? 1 : parseFloat(s);
+    if (!Number.isFinite(gain)) return toast("not a number", true);
+    edit({ op: "edge_gain", from: e.from, to: e.to, gain });
+    renderSheet();
+  });
+  return el("div", { class: "cable" }, row, el("div", { class: "param" }, el("div", { class: "name" }, "level"), range, valueBtn));
+}
+
 function renderSheet() {
   const sheet = $("sheet");
   const body = $("sheet-body");
@@ -891,10 +992,8 @@ function renderSheet() {
     spec.params.forEach((p, i) => kids.push(paramRow(n, i, p)));
   }
   kids.push(el("h3", {}, "cables"));
-  const edges = state.project.edges.filter(([a, b]) => a === n.id || b === n.id);
-  kids.push(el("div", { class: "links" }, edges.length ? edges.map(([a, b]) => el("div", { class: "link" },
-    el("span", {}, `${label(nodeById(a))} → ${label(nodeById(b))}`),
-    el("button", { onclick: () => { edit({ op: "disconnect", from: a, to: b }); renderSheet(); } }, "✕"))) : el("div", { class: "empty" }, "not connected")));
+  const edges = state.project.edges.filter((e) => e.from === n.id || e.to === n.id);
+  kids.push(el("div", { class: "links" }, edges.length ? edges.map((e) => cableRow(n, e)) : el("div", { class: "empty" }, "not connected")));
   const opening = sheet.dataset.node !== String(n.id);
   sheet.dataset.node = n.id;
   body.replaceChildren(...kids);
@@ -1027,6 +1126,8 @@ function showHelp() {
       ["drag empty", "pan · pinch to zoom"],
       ["+", "add a node, auto-wired from the selection"],
       ["connect →", "then tap the target node"],
+      ["loops", "audio cables may loop (even into the same node); the closing cable is dashed"],
+      ["cable level", "edit a node → cables → level slider (0–2)"],
       ["↶", "undo"],
     ]),
     el("h2", { style: "margin-top:16px" }, "pattern language"),
@@ -1092,7 +1193,7 @@ async function boot() {
   let restored = null;
   try { restored = JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || "null"); } catch {}
   const r = restored ? state.model.call({ op: "load", project: restored }) : null;
-  state.project = r && r.ok ? r.project : state.model.call({ op: "demo" }).project;
+  setProject(r && r.ok ? r : state.model.call({ op: "demo" }));
 
   resize();
   fitView();

@@ -244,3 +244,4 @@ button:disabled { opacity: .35; }
   .sheet-open .fab { right: 396px; }
   .sheet-open .fab.small { right: 402px; }
 }
+.cable { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; border-bottom: 1px solid var(--dot); }
