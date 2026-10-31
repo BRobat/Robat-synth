@@ -56,7 +56,7 @@ to select it.
 | `H J K L` / shift+arrows | move the node (swaps with a node in the way) |
 | `tab` / `shift+tab` | cycle through nodes |
 | `a` | add a node (type to filter, enter); it auto-wires from the selection |
-| `c` … `enter` | connect selection → target (pick the target with hjkl) |
+| `c` … `enter` | connect selection → target (pick the target with hjkl); loops allowed |
 | `d` | disconnect (pick which cable) |
 | `x` · `y` · `m` · `u` | delete · duplicate · mute · undo |
 | `enter` / `e` | edit node |
@@ -67,7 +67,7 @@ to select it.
 
 | edit | |
 |---|---|
-| `j k` / `h l` / `H L` | choose param / adjust / adjust coarse |
+| `j k` / `h l` / `H L` | choose param or cable level / adjust / adjust coarse |
 | `=` · `0` | type an exact value · reset to default |
 | `tab` | sequencer: switch between params and steps/pattern |
 | steps: `h l` `j k` `J K` | move cursor, note ±1, octave ±1 |
@@ -85,10 +85,28 @@ Commands: `:w [name]`, `:e [name]` (projects live in `~/Documents/Robat Synth/`)
 | `seq` | – → notes | mode (grid/pattern), rate (steps per bar), length (1–64, odd lengths make polymeters), gate, swing, transpose |
 | `synth` | notes → audio | 8 voices; wave (sine/saw/square/tri/noise), osc2 mix + detune, octave, ADSR, low-pass cutoff/res/env amount, level |
 | `amp` | audio → audio | gain, pan |
+| `filter` | audio → audio | mode (lp/bp/hp/notch), cutoff, res, drive |
+| `drive` | audio → audio | shape (soft/hard/fold), drive, bits (16 = clean), rate (sample-rate ÷), mix, level |
 | `delay` | audio → audio | time in 1/16 notes (tempo-synced), feedback, mix |
+| `chorus` | audio → audio | rate, depth, time (ms), feedback, mix; short time + feedback = flanger |
+| `reverb` | audio → audio | size, damp, width, mix (Freeverb) |
 | `out` | audio → device | channel pair (1-2 … 15-16), level (soft-clipped) |
 
 Several cables into one input are summed, so any node can be used as a mixer.
+
+### Cables and loops
+
+Every audio cable has its own **level** (0–2, default 1). In edit mode the
+node's incoming cables are listed under *cable levels*, below its params, and
+are adjusted like any param. A cable that isn't at 1 shows its level on the
+canvas.
+
+Audio cables may form **loops**, including a node feeding itself: e.g.
+`delay → filter → drive → delay` for a dirty dub echo, or `chorus → chorus`
+for a metallic resonator. The cable that closes a loop is drawn dashed and
+carries the previous 64-sample block (≈1.3 ms at 48 kHz). Loop returns are
+soft-limited and a node that blows up is reset, so a hot loop saturates rather
+than exploding; turn its cable level down to tame it.
 
 ## Pattern language
 
@@ -150,5 +168,5 @@ cargo test -p engine --release -- --ignored       # render demo.wav
 
 - visual layer: each node emits generative graphics, so the patch becomes a living city
 - audio input nodes (guitar, mics) through the same multichannel device
-- modulation (LFOs, envelopes into params), more oscillators/filters, samples
+- modulation (LFOs, envelopes into params), more oscillators, samples
 - tempo/transport sync with Logic (MIDI clock / Ableton Link)

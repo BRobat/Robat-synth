@@ -3,7 +3,7 @@
 use crate::audio::{self, AudioOut};
 use crate::draw::Visuals;
 use eframe::egui::{self, Key, Modifiers, Vec2};
-use engine::model::{seq_p, Curve, NodeKind, Step, MAX_STEPS};
+use engine::model::{seq_p, Curve, NodeKind, ParamSpec, Port, Step, CABLE_LEVEL, MAX_STEPS};
 use engine::{Project, Session};
 use pattern::ParseError;
 use std::collections::HashMap;
@@ -98,6 +98,46 @@ impl Picker {
             PickKind::Disconnect(_) => "disconnect",
             PickKind::Device(_) => "audio device",
             PickKind::Open(_) => "open project",
+        }
+    }
+}
+
+/// A row of the edit-mode list: one of the node's params, or the level of
+/// an audio cable coming into it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Row {
+    Param(usize),
+    Cable(u32),
+}
+
+impl Row {
+    pub fn all(session: &Session, id: u32) -> Vec<Row> {
+        let pr = &session.project;
+        let Some(node) = pr.node(id) else { return Vec::new() };
+        let params = (0..node.kind.params().len()).map(Row::Param);
+        let audio_in = |from: u32| pr.node(from).is_some_and(|n| n.kind.output() == Port::Audio);
+        let cables = pr.edges.iter().filter(|e| e.to == id && audio_in(e.from)).map(|e| Row::Cable(e.from));
+        params.chain(cables).collect()
+    }
+
+    pub fn spec(self, session: &Session, id: u32) -> ParamSpec {
+        match self {
+            Row::Param(i) => session.project.node(id).unwrap().kind.params()[i],
+            Row::Cable(_) => CABLE_LEVEL,
+        }
+    }
+
+    pub fn value(self, session: &Session, id: u32) -> f32 {
+        match self {
+            Row::Param(i) => session.project.node(id).unwrap().params[i],
+            Row::Cable(from) => session.project.edge(from, id).map_or(CABLE_LEVEL.default, |e| e.gain),
+        }
+    }
+
+    pub fn set(self, session: &mut Session, id: u32, v: f32) {
+        match self {
+            Row::Param(i) => session.set_param(id, i, v),
+            Row::Cable(from) => session.set_edge_gain(from, id, v),
         }
     }
 }
@@ -404,7 +444,8 @@ impl App {
                 self.mode = Mode::Connect { from: id, target };
             }
             Input::Char('d') => {
-                let edges: Vec<(u32, u32)> = self.session.project.edges.iter().copied().filter(|(a, b)| *a == id || *b == id).collect();
+                let edges: Vec<(u32, u32)> =
+                    self.session.project.edges.iter().filter(|e| e.from == id || e.to == id).map(|e| (e.from, e.to)).collect();
                 if edges.is_empty() {
                     self.info("no connections");
                 } else {
@@ -447,7 +488,9 @@ impl App {
                 self.snapshot();
                 match self.session.connect(from, target) {
                     Ok(()) => {
-                        self.info(format!("{} → {}", label(&self.session, from), label(&self.session, target)));
+                        let looped = self.session.project.feedback_edges().iter().any(|e| (e.from, e.to) == (from, target));
+                        let arrow = if looped { "↺" } else { "→" };
+                        self.info(format!("{} {arrow} {}", label(&self.session, from), label(&self.session, target)));
                         self.mode = Mode::Graph;
                     }
                     Err(e) => {
@@ -493,13 +536,16 @@ impl App {
         }
         match focus {
             Focus::Params => {
-                let specs = node.kind.params();
+                let rows = Row::all(&self.session, id);
+                let len = rows.len();
+                self.param_focus = self.param_focus.min(len - 1);
+                let row = rows[self.param_focus];
+                let spec = row.spec(&self.session, id);
                 let dir = Self::dir_of(input);
                 match (input, dir) {
-                    (_, Some((Dir::Up, _))) => self.param_focus = (self.param_focus + specs.len() - 1) % specs.len(),
-                    (_, Some((Dir::Down, _))) => self.param_focus = (self.param_focus + 1) % specs.len(),
+                    (_, Some((Dir::Up, _))) => self.param_focus = (self.param_focus + len - 1) % len,
+                    (_, Some((Dir::Down, _))) => self.param_focus = (self.param_focus + 1) % len,
                     (_, Some((d @ (Dir::Left | Dir::Right), coarse))) => {
-                        let spec = &specs[self.param_focus];
                         let sign = if d == Dir::Left { -1.0 } else { 1.0 };
                         let steps = match (spec.curve, coarse) {
                             (Curve::Int, false) => 1.0,
@@ -507,14 +553,11 @@ impl App {
                             (_, false) => 1.0,
                             (_, true) => 10.0,
                         };
-                        let v = spec.nudge(node.params[self.param_focus], sign * steps);
-                        self.session.set_param(id, self.param_focus, v);
+                        let v = spec.nudge(row.value(&self.session, id), sign * steps);
+                        row.set(&mut self.session, id, v);
                     }
                     (Input::Char('='), _) | (Input::Key(Key::Enter, _), _) => self.mode = Mode::Value(String::new()),
-                    (Input::Char('0'), _) => {
-                        let d = specs[self.param_focus].default;
-                        self.session.set_param(id, self.param_focus, d);
-                    }
+                    (Input::Char('0'), _) => row.set(&mut self.session, id, spec.default),
                     _ => {}
                 }
             }
@@ -625,15 +668,16 @@ impl App {
                 self.mode = Mode::Value(buf);
             }
             Input::Key(Key::Enter, _) => {
-                if let Some(node) = self.selected.and_then(|id| self.session.project.node(id)) {
-                    let (id, spec) = (node.id, node.kind.params()[self.param_focus]);
+                if let Some(row) = self.selected.and_then(|id| Row::all(&self.session, id).get(self.param_focus).map(|r| (id, *r))) {
+                    let (id, row) = row;
+                    let spec = row.spec(&self.session, id);
                     let parsed = buf
                         .trim()
                         .parse::<f32>()
                         .ok()
                         .or_else(|| spec.labels.iter().position(|l| l.starts_with(buf.trim())).map(|i| spec.min + i as f32));
                     match parsed {
-                        Some(v) => self.session.set_param(id, self.param_focus, v),
+                        Some(v) => row.set(&mut self.session, id, v),
                         None => self.error(format!("not a value: {buf}")),
                     }
                 }

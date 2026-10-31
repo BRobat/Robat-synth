@@ -1,4 +1,4 @@
-use engine::model::{out_p, seq_p, NodeKind, Step};
+use engine::model::{amp_p, delay_p, out_p, seq_p, Edge, NodeKind, NodeModel, Step};
 use engine::{render_offline, Project, Session};
 
 const SR: f32 = 48000.0;
@@ -75,6 +75,91 @@ fn build_a_patch_from_scratch() {
     core.process(&mut buf, 2);
     assert!(pair_rms(&buf, 2, 0) > 0.01);
     assert!(s.meters().unwrap().triggers[syn as usize].load(std::sync::atomic::Ordering::Relaxed) >= 3);
+}
+
+/// Renders `secs` seconds as 100 ms chunks, returning each chunk's RMS on pair 0.
+fn render_chunks(s: &mut Session, core: &mut engine::EngineCore, secs: usize) -> Vec<f32> {
+    let mut buf = vec![0.0; 4800 * 2];
+    (0..secs * 10)
+        .map(|_| {
+            s.pump();
+            core.process(&mut buf, 2);
+            assert!(buf.iter().all(|x| x.is_finite() && x.abs() <= 1.0));
+            pair_rms(&buf, 2, 0)
+        })
+        .collect()
+}
+
+/// The demo's bass voice (seq 0 -> synth 1) routed through `kind` into out 2.
+fn bass_through(kind: NodeKind) -> (Project, u32) {
+    let mut pr = Project::demo();
+    pr.nodes.push(NodeModel::new(7, kind, 1, 2));
+    pr.edges.retain(|e| (e.from, e.to) != (1, 2));
+    pr.edges.extend([Edge::new(1, 7), Edge::new(7, 2)]);
+    (pr, 7)
+}
+
+#[test]
+fn every_effect_renders() {
+    for kind in [NodeKind::Filter, NodeKind::Drive, NodeKind::Reverb, NodeKind::Chorus] {
+        let (pr, _) = bass_through(kind);
+        let buf = render_offline(pr, SR, 2, 3.0);
+        assert!(buf.iter().all(|x| x.is_finite() && x.abs() <= 1.0), "{kind:?}");
+        assert!(pair_rms(&buf, 2, 0) > 0.01, "{kind:?} is silent");
+    }
+}
+
+#[test]
+fn feedback_loop_rings_on_after_the_source_stops() {
+    // synth 1 -> delay 7 -> amp 8 -> back into delay 7, delay 7 -> out 2.
+    let (mut pr, delay) = bass_through(NodeKind::Delay);
+    pr.node_mut(delay).unwrap().params[delay_p::FEEDBACK] = 0.0;
+    let mut amp = NodeModel::new(8, NodeKind::Amp, 2, 2);
+    amp.params[amp_p::GAIN] = 0.8;
+    pr.nodes.push(amp);
+    pr.edges.extend([Edge::new(delay, 8), Edge::new(8, delay)]);
+    assert_eq!(pr.feedback_edges(), vec![Edge::new(8, delay)]);
+
+    let (mut s, mut core) = Session::offline(pr, SR);
+    s.play(true);
+    assert!(render_chunks(&mut s, &mut core, 2).iter().sum::<f32>() > 0.0);
+    s.toggle_mute(1);
+    // The loop keeps the sound going well past the synth's release.
+    let tail = render_chunks(&mut s, &mut core, 1);
+    assert!(tail[5..].iter().all(|r| *r > 1e-4), "{tail:?}");
+    // Cutting the return cable lets it die away.
+    s.set_edge_gain(8, delay, 0.0);
+    let tail = render_chunks(&mut s, &mut core, 2);
+    assert!(*tail.last().unwrap() < 1e-4, "{tail:?}");
+}
+
+#[test]
+fn self_loop_and_runaway_gain_stay_finite() {
+    let (mut s, mut core) = Session::offline(Project::demo(), SR);
+    // delay 5 feeds itself through a hot cable.
+    s.connect(5, 5).unwrap();
+    s.set_edge_gain(5, 5, 2.0);
+    s.set_param(5, delay_p::FEEDBACK, 0.95);
+    s.play(true);
+    let mut buf = vec![0.0; 4800 * 4];
+    for _ in 0..50 {
+        s.pump();
+        core.process(&mut buf, 4);
+        assert!(buf.iter().all(|x| x.is_finite() && x.abs() <= 1.0));
+    }
+    assert!(pair_rms(&buf, 4, 1) > 0.01);
+}
+
+#[test]
+fn cable_level_scales_and_mutes() {
+    let (mut s, mut core) = Session::offline(Project::demo(), SR);
+    s.play(true);
+    let loud: f32 = render_chunks(&mut s, &mut core, 1).iter().sum();
+    s.set_edge_gain(1, 2, 0.0);
+    render_chunks(&mut s, &mut core, 1);
+    assert_eq!(render_chunks(&mut s, &mut core, 1).iter().sum::<f32>(), 0.0);
+    s.set_edge_gain(1, 2, 1.0);
+    assert!(render_chunks(&mut s, &mut core, 1).iter().sum::<f32>() > loud * 0.2);
 }
 
 #[test]

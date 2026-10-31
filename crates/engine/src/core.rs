@@ -10,11 +10,28 @@ pub const BLOCK: usize = 64;
 const EVENT_CAP: usize = 256;
 const RING: usize = 4096;
 
+/// An audio cable into a slot.
+pub struct SlotInput {
+    /// Index of the source slot. A source at or after this slot closes a
+    /// loop and is heard one block late.
+    pub slot: usize,
+    pub from: u32,
+    pub gain: f32,
+    /// Gain applied at the end of the last block, ramped towards `gain`.
+    cur: f32,
+}
+
+impl SlotInput {
+    pub fn new(slot: usize, from: u32, gain: f32) -> Self {
+        SlotInput { slot, from, gain, cur: gain }
+    }
+}
+
 pub struct Slot {
     pub id: u32,
     pub muted: bool,
-    /// Indices of earlier slots feeding audio / events into this one.
-    pub audio_in: Vec<usize>,
+    pub audio_in: Vec<SlotInput>,
+    /// Indices of earlier slots feeding events into this one.
     pub event_in: Vec<usize>,
     in_audio: [Vec<f32>; 2],
     in_events: Vec<NoteEvent>,
@@ -23,7 +40,7 @@ pub struct Slot {
 }
 
 impl Slot {
-    pub fn new(id: u32, muted: bool, audio_in: Vec<usize>, event_in: Vec<usize>) -> Self {
+    pub fn new(id: u32, muted: bool, audio_in: Vec<SlotInput>, event_in: Vec<usize>) -> Self {
         Slot {
             id,
             muted,
@@ -49,6 +66,7 @@ pub enum Command {
     RemoveProc(u32),
     Param { node: u32, idx: usize, value: f32 },
     Data { node: u32, data: NodeData },
+    EdgeGain { from: u32, to: u32, gain: f32 },
     Play(bool),
     Bpm(f32),
 }
@@ -188,6 +206,12 @@ impl EngineCore {
                     }
                     None => self.discard(Garbage::Data(data)),
                 },
+                Command::EdgeGain { from, to, gain } => {
+                    let inputs = self.structure.slots.iter_mut().filter(|s| s.id == to).flat_map(|s| s.audio_in.iter_mut());
+                    for input in inputs.filter(|i| i.from == from) {
+                        input.gain = gain;
+                    }
+                }
                 Command::Play(on) => {
                     if !on || !self.playing {
                         self.pos = 0.0;
@@ -244,14 +268,31 @@ impl EngineCore {
         let slots = &mut self.structure.slots;
         for i in 0..slots.len() {
             let (before, rest) = slots.split_at_mut(i);
-            let slot = &mut rest[0];
+            let (slot, after) = rest.split_first_mut().unwrap();
             for ch in 0..2 {
                 slot.in_audio[ch][..n].fill(0.0);
-                for &j in &slot.audio_in {
-                    for (d, s) in slot.in_audio[ch][..n].iter_mut().zip(&before[j].out_audio[ch][..n]) {
-                        *d += *s;
+            }
+            for input in slot.audio_in.iter_mut() {
+                let j = input.slot;
+                // Earlier slots hold this block; this one and later ones
+                // still hold the previous block (loop feedback).
+                let src = match j.cmp(&i) {
+                    std::cmp::Ordering::Less => &before[j].out_audio,
+                    std::cmp::Ordering::Equal => &slot.out_audio,
+                    std::cmp::Ordering::Greater => &after[j - i - 1].out_audio,
+                };
+                let feedback = j >= i;
+                let (g0, step) = (input.cur, (input.gain - input.cur) / n as f32);
+                for (dst, src) in slot.in_audio.iter_mut().zip(src) {
+                    for (f, (d, s)) in dst[..n].iter_mut().zip(&src[..n]).enumerate() {
+                        let x = s * (g0 + step * (f + 1) as f32);
+                        // Soft-limit loop returns so runaway feedback saturates instead of exploding.
+                        *d += if feedback { x / (1.0 + x.abs() * 0.25) } else { x };
                     }
                 }
+                input.cur = input.gain;
+            }
+            for ch in 0..2 {
                 slot.out_audio[ch][..n].fill(0.0);
             }
             slot.in_events.clear();
@@ -277,6 +318,13 @@ impl EngineCore {
                     events_out: &mut slot.out_events,
                 },
             );
+            // A blown-up processor (e.g. a self-oscillating loop) is reset
+            // rather than allowed to poison the rest of the graph.
+            if !out_l[..n].iter().chain(&out_r[..n]).all(|x| x.is_finite()) {
+                proc.stop();
+                out_l[..n].fill(0.0);
+                out_r[..n].fill(0.0);
+            }
             if slot.muted {
                 out_l[..n].fill(0.0);
                 out_r[..n].fill(0.0);

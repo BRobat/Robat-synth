@@ -1,8 +1,12 @@
 //! Node processors. They run on the audio thread: no allocation, no locks.
 
 mod amp;
+mod chorus;
 mod delay;
+mod drive;
+mod filter;
 mod out;
+mod reverb;
 mod seq;
 mod synth;
 
@@ -93,6 +97,10 @@ pub fn make_processor(node: &NodeModel, sr: f32) -> Box<dyn Processor> {
         NodeKind::Amp => Box::new(amp::Amp::new()),
         NodeKind::Delay => Box::new(delay::Delay::new(sr)),
         NodeKind::Out => Box::new(out::Out::new()),
+        NodeKind::Filter => Box::new(filter::Filter::new()),
+        NodeKind::Drive => Box::new(drive::Drive::new()),
+        NodeKind::Reverb => Box::new(reverb::Reverb::new(sr)),
+        NodeKind::Chorus => Box::new(chorus::Chorus::new(sr)),
     };
     for (i, v) in node.params.iter().enumerate() {
         p.set_param(i, *v);
